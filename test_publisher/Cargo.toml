@@ -1,0 +1,9 @@
+[package]
+name = "test_publisher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zrdds-safe = { path = "../../zrdds-rust/zrdds-safe", features = ["serde"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
