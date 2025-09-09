@@ -44,58 +44,75 @@ export function App() {
   }, [logs]);
 
   // 本地操作处理
-  const handleBoardChange = (newValue: BoardChangeData) => {
-    prevElementsRef.current = newValue.children;
+  // 本地操作处理
+const handleBoardChange = (newValue: BoardChangeData) => {
+  console.log("👉 收到本地 BoardChangeData:", newValue);
 
-    const filteredOps =
-      newValue.operations?.filter(
-        (op: any) =>
-          op.type === 'insert_node' ||
-          op.type === 'remove_node' ||
-          op.type === 'set_node'
-      ) || [];
+  const filteredOps =
+    newValue.operations?.filter(
+      (op: any) =>
+        op.type === "insert_node" ||
+        op.type === "remove_node" ||
+        op.type === "set_node"
+    ) || [];
 
-    if (filteredOps.length > 0) {
-      setLogs((prev) => [
-        ...prev,
-        ...filteredOps.map((op: any) => `本地操作: ${op.type}`),
-      ]);
-    }
-  };
-
-  // 后端推送的 BoardChangeData 应用到白板（增量更新）
-  const applyBoardChangeFromRust = (newValue: BoardChangeData) => {
+  if (filteredOps.length > 0) {
+    // ✅ 更新 React 状态
     setValue((prev) => {
       let updatedChildren = [...prev.children];
 
-      (newValue.operations || []).forEach((op: any) => {
-        if (op.type === 'insert_node' && op.node) {
-          updatedChildren = [...updatedChildren, op.node];
-        } else if (op.type === 'remove_node' && op.node) {
+      filteredOps.forEach((op: any) => {
+        if (op.type === "insert_node" && op.node) {
+          if (!updatedChildren.find((n) => n.id === op.node.id)) {
+            updatedChildren.push(op.node);
+          }
+        } else if (op.type === "remove_node" && op.node) {
           updatedChildren = removeNode(updatedChildren, op.node.id);
-        } else if (op.type === 'set_node' && op.node) {
-          updatedChildren = updateNode(updatedChildren, op.node);
+        } else if (op.type === "set_node" && op.node) {
+          if (updatedChildren.find((n) => n.id === op.node.id)) {
+            updatedChildren = updateNode(updatedChildren, op.node);
+          }
         }
       });
 
       return { ...prev, children: updatedChildren };
     });
 
-    const filteredOps =
-      newValue.operations?.filter(
-        (op: any) =>
-          op.type === 'insert_node' ||
-          op.type === 'remove_node' ||
-          op.type === 'set_node'
-      ) || [];
+    // ✅ 写日志
+    setLogs((prev) => [
+      ...prev,
+      ...filteredOps.map((op: any) => `本地操作: ${op.type}`),
+    ]);
+  }
+};
 
-    if (filteredOps.length > 0) {
-      setLogs((prev) => [
-        ...prev,
-        ...filteredOps.map((op: any) => `后端操作: ${op.type}`),
-      ]);
-    }
-  };
+
+
+  // 后端推送的 BoardChangeData 应用到白板（增量更新）
+  const applyBoardChangeFromRust = (newValue: BoardChangeData) => {
+  setValue((prev) => {
+    let updatedChildren = [...prev.children];
+
+    (newValue.operations || []).forEach((op: any) => {
+      if (op.type === "insert_node" && op.node) {
+        if (!updatedChildren.find((n) => n.id === op.node.id)) {
+          updatedChildren.push(op.node);
+        }
+      } else if (op.type === "remove_node" && op.node) {
+        updatedChildren = removeNode(updatedChildren, op.node.id);
+      } else if (op.type === "set_node" && op.node) {
+        if (updatedChildren.find((n) => n.id === op.node.id)) {
+          updatedChildren = updateNode(updatedChildren, op.node);
+        } else {
+          console.warn("⚠️ set_node 收到未知 id, 忽略:", op.node.id);
+        }
+      }
+    });
+
+    return { ...prev, children: updatedChildren };
+  });
+};
+
 
   // 监听 Rust 发来的 board-change 事件
   useEffect(() => {
