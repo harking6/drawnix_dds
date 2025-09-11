@@ -37,12 +37,15 @@ export function App() {
   useEffect(() => {
     const checkDdsStatus = async () => {
       try {
+        console.log('🔍 检查DDS连接状态...');
         const status = await invoke<boolean>('get_dds_status');
+        console.log('🔍 DDS状态返回:', status);
         setDdsConnected(status);
         setLogs(prev => [...prev, status ? '✅ DDS连接已建立' : '⚠️ DDS未连接，仅本地模式']);
       } catch (error) {
         console.error('检查DDS状态失败:', error);
         setDdsConnected(false);
+        setLogs(prev => [...prev, `❌ DDS状态检查失败: ${error}`]);
       }
     };
     
@@ -172,15 +175,22 @@ export function App() {
   // ======================================================== //
   // 发布白板变化到DDS
   const publishToDDS = async (boardChangeData: BoardChangeData) => {
+    console.log('🔍 publishToDDS 被调用，DDS连接状态:', ddsConnected);
+    console.log('🔍 发布数据:', boardChangeData);
+    
     if (!ddsConnected) {
+      console.log('⚠️ DDS未连接，跳过发布');
+      setLogs(prev => [...prev, '⚠️ DDS未连接，跳过发布']);
       return; // DDS未连接，不发布
     }
     
     try {
+      console.log('📤 开始调用 Tauri 命令...');
       await invoke('publish_board_change', { boardData: boardChangeData });
+      console.log('✅ Tauri 命令调用成功');
       setLogs(prev => [...prev, `📤 已发布到DDS: ${boardChangeData.operations?.length || 0} 个操作`]);
     } catch (error) {
-      console.error('DDS发布失败:', error);
+      console.error('❌ DDS发布失败:', error);
       setLogs(prev => [...prev, `❌ DDS发布失败: ${error}`]);
     }
   };
@@ -189,6 +199,7 @@ export function App() {
   const handleBoardChange = async (newValue: BoardChangeData) => {
     // 如果正在应用远程变化，不处理本地变化
     if (isApplyingRemoteChange.current) {
+      console.log('⏭️ 跳过远程变化应用期间的本地操作');
       return;
     }
     
@@ -203,11 +214,40 @@ export function App() {
       applyOperationsToBoardState(filteredOps);
       
       // 发布到DDS
-      const boardChangeForDDS = {
-        ...newValue,
-        operations: filteredOps
+      // 辅助函数：确保对象可以被JSON序列化
+      const ensureSerializable = (obj: any): any => {
+        return JSON.parse(JSON.stringify(obj, (key, value) => {
+          // 过滤掉不可序列化的值
+          if (value instanceof Map) {
+            return Object.fromEntries(value);
+          }
+          if (typeof value === 'function') {
+            return undefined;
+          }
+          return value;
+        }));
       };
-      await publishToDDS(boardChangeForDDS);
+      
+      // 在创建 boardChangeForDDS 时使用
+      const boardChangeForDDS = ensureSerializable({
+        children: boardStateRef.current,
+        operations: filteredOps,
+        viewport: value.viewport || { zoom: 1.0, x: 0.0, y: 0.0 },
+        selection: null,
+        theme: value.theme || { color_mode: 'light' },
+        timestamp: new Date().toISOString(),
+        source_id: undefined
+      });
+      
+      console.log('📤 准备发布到DDS:', boardChangeForDDS);
+      
+      // 🚨 确保这里被调用
+      try {
+        await publishToDDS(boardChangeForDDS);
+        console.log('✅ DDS发布调用成功');
+      } catch (error) {
+        console.error('❌ DDS发布调用失败:', error);
+      }
       
       // 记录日志
       setLogs((prev) => [...prev, ...filteredOps.map((op) => `🔧 本地操作: ${op.type}`)]);
