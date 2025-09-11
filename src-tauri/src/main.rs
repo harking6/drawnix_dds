@@ -14,8 +14,23 @@ use tauri::{AppHandle, Emitter};
 use chrono;
 use uuid;
 
+#[tauri::command]
+fn forward_board_change(change: BoardChangeData, handle: tauri::AppHandle) {
+    println!("⏩ 收到前端转发: {:?}", change);
+
+    // 发回本机前端
+    if let Err(e) = handle.emit("board-change", &change) {
+        eprintln!("前端发送失败: {}", e);
+    }
+
+    // TODO: 转发到 DDS
+}
+
+
+
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![forward_board_change]) // ⬅ 注册 command
         .setup(|app| {
             let handle: AppHandle = app.handle().clone();
 

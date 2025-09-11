@@ -4,6 +4,9 @@ import { Drawnix } from '@drawnix/drawnix';
 import { PlaitElement, PlaitTheme, Viewport } from '@plait/core';
 import type { BoardChangeData } from '@plait-board/react-board';
 import { listen } from '@tauri-apps/api/event';
+import { emit } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+
 
 // ===================== 全局维护的结构 ===================== //
 // 用 useRef 存储所有节点和位置，不随渲染丢失
@@ -132,15 +135,16 @@ const updateNodePropertiesAtPath = (
 
         case 'set_node':
   if (op.path) {
-    if (op.node) {
-      // 情况1：全量 node（后端规约）
+    if (op.node && op.source === 'frontend') {
+      // ⚡ 前端的 set_node：完整 node
       updatedChildren = updateNodeAtPath(updatedChildren, op.path, op.node);
     } else if (op.properties) {
-      // 情况2：增量 properties（前端拖动）
+      // ⚡ 后端的 set_node：增量 properties
       updatedChildren = updateNodePropertiesAtPath(updatedChildren, op.path, op.properties);
     }
   }
   break;
+
 
 
         default:
@@ -153,18 +157,34 @@ const updateNodePropertiesAtPath = (
 
   // ======================================================== //
   // 前端操作：只改结构 + 写日志
+  // 前端操作
   const handleBoardChange = (newValue: BoardChangeData) => {
-    console.log('👉 收到本地 BoardChangeData:', newValue);
-    const filteredOps =
-      newValue.operations?.filter((op: any) =>
-        ['insert_node', 'remove_node', 'set_node'].includes(op.type)
-      ) || [];
-    if (filteredOps.length > 0) {
-      applyOperationsToBoardState(filteredOps);
-      setLogs((prev) => [...prev, ...filteredOps.map((op) => `本地操作: ${op.type}`)]);
-      // ⚠️ 注意：这里不调用 setValue，不触发渲染
-    }
-  };
+  console.log('👉 收到本地 BoardChangeData:', newValue);
+  const filteredOps =
+    newValue.operations?.filter((op: any) =>
+      ['insert_node', 'remove_node', 'set_node'].includes(op.type)
+    ) || [];
+
+  if (filteredOps.length > 0) {
+    // 更新本地结构
+    applyOperationsToBoardState(filteredOps);
+
+    // 写日志
+    setLogs((prev) => [...prev, ...filteredOps.map((op) => `本地操作: ${op.type}`)]);
+
+    // 🔥 调用 Rust command，让后端统一转发
+    invoke("forward_board_change", {
+      change: {
+        operations: filteredOps,
+        timestamp: new Date().toISOString(),
+        source_id: "frontend", // 每个客户端应有唯一 ID
+      }
+    }).catch((err) => {
+      console.error("❌ 调用 forward_board_change 失败:", err);
+    });
+  }
+};
+
 
   // 后端推送：改结构 + 渲染 + 写日志
   const applyBoardChangeFromRust = (newValue: BoardChangeData) => {
