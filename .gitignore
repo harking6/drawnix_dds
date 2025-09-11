@@ -136,3 +136,8 @@ Icon?
 *.njsproj
 *.sln
 *.sw?
+
+#
+*.ddslog
+
+#
