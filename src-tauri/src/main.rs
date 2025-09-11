@@ -5,12 +5,31 @@ mod dds_manager;
 
 use shared_types::*;
 use dds_manager::DDSManager;
-use serde::Serialize;
 use std::{sync::{Arc, Mutex}, thread, time::Duration};
-use tauri::{AppHandle, Emitter};
-
-use chrono;
+use tauri::{AppHandle, Emitter, Manager}; // 🔥 添加 Manager trait
 use uuid;
+
+#[tauri::command]
+async fn broadcast_board_change(
+    board_change: BoardChangeData,
+    state: tauri::State<'_, Arc<Mutex<Option<DDSManager>>>>
+) -> Result<(), String> {
+    println!("📤 准备广播用户操作: {:?}", board_change.operations.len());
+    
+    if let Ok(manager_guard) = state.lock() {
+        if let Some(ref manager) = *manager_guard {
+            if let Err(e) = manager.publish_board_change(&board_change) {
+                eprintln!("❌ DDS广播失败: {}", e);
+                return Err(format!("DDS广播失败: {}", e));
+            }
+            println!("✅ 用户操作已广播到DDS");
+        } else {
+            println!("⚠️ DDS管理器未初始化，跳过广播");
+        }
+    }
+    
+    Ok(())
+}
 
 fn main() {
     tauri::Builder::default()
@@ -28,67 +47,8 @@ fn main() {
             
             let source_id = uuid::Uuid::new_v4().to_string();
             
-            // 为发布线程克隆
-            let dds_manager_publish = dds_manager.clone();
-            let source_id_publish = source_id.clone();
-            let handle_publish = handle.clone();
-            
-            thread::spawn(move || {
-                let mut x = 0.0;
-                let mut first = true;
-    
-                loop {
-                    thread::sleep(Duration::from_secs(5));
-                    x += 20.0;
-    
-                    let rect = PlaitElement {
-                        id: "node-1".into(),
-                        element_type: "geometry".into(),
-                        shape: "rectangle".into(),
-                        points: vec![Point(x, 0.0), Point(x + 100.0, 100.0)],
-                    };
-    
-                    let change = if first {
-                        first = false;
-                        BoardChangeData {
-                            operations: vec![Operation::Insert(InsertNodeOperation {
-                                op_type: "insert_node".into(),
-                                node: rect,
-                            })],
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            source_id: source_id_publish.clone(),
-                        }
-                    } else {
-                        BoardChangeData {
-                            operations: vec![Operation::Set(SetNodeOperation {
-                                op_type: "set_node".into(),
-                                node: rect,
-                            })],
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            source_id: source_id_publish.clone(),
-                        }
-                    };
-    
-                    // 发送到前端
-                    if let Err(e) = handle_publish.emit("board-change", &change) {
-                        eprintln!("前端发送失败: {}", e);
-                    }
-                    
-                    // 通过DDS广播（如果可用）
-                    if let Some(ref manager) = dds_manager_publish {
-                        if let Ok(manager_lock) = manager.lock() {
-                            if let Err(e) = manager_lock.publish_board_change(&change) {
-                                eprintln!("DDS发布失败: {}", e);
-                            }
-                        }
-                    }
-                    
-                    println!("✅ 已发送操作，x = {}", x);
-                }
-            });
-            
             // 启动 DDS 订阅线程（如果 DDS 可用）
-            if let Some(dds_manager_subscribe) = dds_manager {
+            if let Some(dds_manager_subscribe) = dds_manager.clone() {
                 let handle_subscribe = handle.clone();
                 let source_id_subscribe = source_id.clone();
                 
@@ -99,7 +59,7 @@ fn main() {
                                 Ok(Some(board_data)) => {
                                     // 避免回环：不处理自己发送的消息
                                     if board_data.source_id != source_id_subscribe {
-                                        println!("📨 收到远程白板变化: {:?}", board_data.operations.len());
+                                        println!("📨 收到远程白板变化: {:?} 个操作", board_data.operations.len());
                                         // 转发到前端
                                         if let Err(e) = handle_subscribe.emit("board-change", &board_data) {
                                             eprintln!("转发到前端失败: {}", e);
@@ -122,8 +82,12 @@ fn main() {
                 });
             }
             
+            // 将DDS管理器作为状态管理
+            app.manage(Arc::new(Mutex::new(dds_manager)));
+            
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![broadcast_board_change])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
