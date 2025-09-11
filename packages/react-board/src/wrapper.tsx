@@ -229,6 +229,7 @@ export const Wrapper: React.FC<WrapperProps> = ({
     }
 
     if (value !== context.board.children && !FLUSHING.get(board)) {
+      console.log('[WRAPPER][value] 外部 value 变更，元素数量 =', Array.isArray(value) ? value.length : -1);
       board.children = value;
       listRender.update(board.children, {
         board: board,
@@ -236,6 +237,11 @@ export const Wrapper: React.FC<WrapperProps> = ({
         parentG: PlaitBoard.getElementHost(board),
       });
       BoardTransforms.fitViewport(board);
+    } else {
+      console.log('[WRAPPER][value] 外部 value 未触发更新', {
+        equalRef: value === context.board.children,
+        flushing: FLUSHING.get(board)
+      });
     }
   }, [value]);
 

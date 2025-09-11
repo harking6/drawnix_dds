@@ -2,18 +2,22 @@
 
 mod shared_types;
 mod dds_manager;
+mod commands;
 
 use shared_types::*;
 use dds_manager::DDSManager;
+use commands::{SharedState, relay_board_change, test_connection};
 use serde::Serialize;
 use std::{sync::{Arc, Mutex}, thread, time::Duration};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use chrono;
 use uuid;
 
 fn main() {
     tauri::Builder::default()
+        // 注册前端可调用的命令
+        .invoke_handler(tauri::generate_handler![test_connection, relay_board_change])
         .setup(|app| {
             let handle: AppHandle = app.handle().clone();
             
@@ -25,67 +29,13 @@ fn main() {
                     None
                 }
             };
+
+            // 注入共享状态，供前端命令与后台线程共享同一 DDS 实例
+            app.manage(SharedState(dds_manager.clone()));
             
             let source_id = uuid::Uuid::new_v4().to_string();
             
-            // 为发布线程克隆
-            let dds_manager_publish = dds_manager.clone();
-            let source_id_publish = source_id.clone();
-            let handle_publish = handle.clone();
-            
-            thread::spawn(move || {
-                let mut x = 0.0;
-                let mut first = true;
-    
-                loop {
-                    thread::sleep(Duration::from_secs(5));
-                    x += 20.0;
-    
-                    let rect = PlaitElement {
-                        id: "node-1".into(),
-                        element_type: "geometry".into(),
-                        shape: "rectangle".into(),
-                        points: vec![Point(x, 0.0), Point(x + 100.0, 100.0)],
-                    };
-    
-                    let change = if first {
-                        first = false;
-                        BoardChangeData {
-                            operations: vec![Operation::Insert(InsertNodeOperation {
-                                op_type: "insert_node".into(),
-                                node: rect,
-                            })],
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            source_id: source_id_publish.clone(),
-                        }
-                    } else {
-                        BoardChangeData {
-                            operations: vec![Operation::Set(SetNodeOperation {
-                                op_type: "set_node".into(),
-                                node: rect,
-                            })],
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            source_id: source_id_publish.clone(),
-                        }
-                    };
-    
-                    // 发送到前端
-                    if let Err(e) = handle_publish.emit("board-change", &change) {
-                        eprintln!("前端发送失败: {}", e);
-                    }
-                    
-                    // 通过DDS广播（如果可用）
-                    if let Some(ref manager) = dds_manager_publish {
-                        if let Ok(manager_lock) = manager.lock() {
-                            if let Err(e) = manager_lock.publish_board_change(&change) {
-                                eprintln!("DDS发布失败: {}", e);
-                            }
-                        }
-                    }
-                    
-                    println!("✅ 已发送操作，x = {}", x);
-                }
-            });
+            // 移除演示线程：避免每5秒自动发送 node-1 变化干扰联调
             
             // 启动 DDS 订阅线程（如果 DDS 可用）
             if let Some(dds_manager_subscribe) = dds_manager {
@@ -95,15 +45,23 @@ fn main() {
                 thread::spawn(move || {
                     loop {
                         if let Ok(mut manager_lock) = dds_manager_subscribe.lock() {
-                            match manager_lock.try_receive_board_change() {
-                                Ok(Some(board_data)) => {
-                                    // 避免回环：不处理自己发送的消息
-                                    if board_data.source_id != source_id_subscribe {
-                                        println!("📨 收到远程白板变化: {:?}", board_data.operations.len());
-                                        // 转发到前端
-                                        if let Err(e) = handle_subscribe.emit("board-change", &board_data) {
-                                            eprintln!("转发到前端失败: {}", e);
+                            match manager_lock.try_receive_raw() {
+                                Ok(Some(json_str)) => {
+                                    println!("[DDS][subscribe] 收到 JSON: {} bytes", json_str.len());
+                                    // 直接将原始 JSON 转发到前端，避免协议不匹配
+                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                        // 如果包含 source_id，与自身一致则忽略
+                                        if val.get("source_id").and_then(|v| v.as_str()) == Some(&source_id_subscribe) {
+                                            println!("[DDS][subscribe] 丢弃自身 source_id 的消息");
+                                            continue;
                                         }
+                                        if let Err(e) = handle_subscribe.emit("board-change", &val) {
+                                            eprintln!("转发到前端失败: {}", e);
+                                        } else {
+                                            println!("[DDS][subscribe] 已转发到前端");
+                                        }
+                                    } else {
+                                        eprintln!("DDS 消息 JSON 解析失败，已忽略");
                                     }
                                 }
                                 Ok(None) => {
